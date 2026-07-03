@@ -1,23 +1,28 @@
-What problem was I trying to solve?
+## Lab Architecture
+- **DC01** — Windows Server 2022 Domain Controller (corp.local)
+- **WIN11-CLIENT** — Windows 11 domain-joined target machine
+- **Kali Linux** — Attacker machine
+
+## What problem was I trying to solve?
 In enterprise environments, Active Directory domain controllers are a primary target for attackers because they manage authentication for every user and machine on the network. Security analysts typically have to manually review hundreds of Windows Security Event logs to find suspicious tickets/requests. The problem I wanted to solve was automating that detection process. I integrated the Claude API to analyze Windows security logs in real time and identify malicious Kerberos ticket requests made by tools like Impacket and BloodHound, then generate a full incident report automatically. 
 
 
-What did I build?
+## What did I build?
 I built a three-machine home lab running inside UTM on an Apple silicon Mac. The first machine was DC01, a Windows Server 2022 domain controller running at 192.168.64.21, configured with Active Directory domain services and DNS for the corp.local domain. The second machine was WIN11-CLIENT at 192.168.64.22, a Windows 11 Pro machine joined to the corp.local domain, simulating a regular employee workstation. The third machine was Kali Linux, the attacker machine used to run offensive security tools against the domain. 
 
-The Attack—Kerberosating
+## The Attack—Kerberosating
 Kerberoasting is an attack that exploits how Kerberos handles service ticket requests. Any authenticated domain user can request a Kerberos service ticket for any service that has a Service Principal Name registered in Active Directory. The ticket is encrypted with the service account’s password hash. An attacker can take that ticket offline and crack it without ever interacting with the domain controller again, making it very hard to detect after the initial request. 
 
 To set up the attack, I assigned an SPN to Bob. Jones is making him a service account by running setspn -a MSSQLSvc/dc01.corp.local:1433 bob.jones on DC01. This simulates a real SQL server service account, which is a common Kerberosing target in enterprise environments. 
 
-Running the Attack
+## Running the Attack
 From the Kali Linux machine, I ran Impacket’s GetUserSPNs tool targeting DC01 at 192.168.64.21, authenticating as john.smith with domain credentials. The command requested all available Kerberos service tickets from the domain. DC01 responded with an encrypted TGS ticket for Bob. Jones is using the RC4 encryption type 0x17. That encrypted hash was returned directly to the Kali terminal and could be cracked offline using tools like John the Ripper or Hashcat to recover Bob. Jones's plaintext password without any further interaction with the domain. 
 
-Finding the Evidence
+## Finding the Evidence
 After running the attack, I opened Event Viewer on DC01 and filtered the Windows Security logs for EventID 4769 Kerberos Service Ticket Operations. The log showed the exact timestamp of the request, the account that made the request, the service that was targeted, the source IP address of the attacker machine, and the encryption type used. The RC4 encryption type 0x17 is a significant indicator of Kerberoasting because modern systems default to AES encryption, so an explicit RC4 request is a red flag a defender should investigate immediately.
 
-The LLM Detection Layer
+## The LLM Detection Layer
 I built a Python script that takes Windows Security Event log data and sends it to the Claude API for analysis. The script feeds the raw log, including the event ID, timestamp, account name, service name, encryption type, and source IP, into Claude with a prompt asking it to analyze the log as a cybersecurity incident. Claude returns a full incident report identifying the attack technique, mapping it to MITRE ATT&CK T1558.003 (Steal or Forge Kerberos Tickets: Kerberoasting), assigning a severity level, explaining what the attacker was trying to accomplish. and recommending immediate response actions. This automates what would normally take a security analyst significant manual effort.
 
-What I learned
+## What I learned
 I learned that security has layers and that understanding how things work normally is what makes you able to spot when something is wrong. Setting up Active Directory and DNS from scratch gave me a real appreciation for how authentication works in enterprise environments, and then attacking it showed me how something as fundamental as a ticket request can be weaponized. The most surprising thing was how legitimate the attacks looked. Kerberos uses normal AD functionality, which is exactly what makes it dangerous and why the detection layer matters. I also ran into real troubleshooting challenges, including DNS configuration issues getting WIN11-CLIENT to resolve corp.local, which request disabling IPV6 and manually setting the DNS server to DC01’s IP address at 192.169.64.21
