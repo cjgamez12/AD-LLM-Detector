@@ -1,0 +1,10 @@
+[
+  {
+    "TimeCreated": "/Date(1783583817201)/",
+    "EventId": 4769,
+    "AccountName": "sarah.connor@CORP.LOCAL",
+    "ServiceName": "bob.jones",
+    "TicketEncryptionType": "0x17",
+    "ClientAddress": "::ffff:192.168.64.7"
+  }
+]
