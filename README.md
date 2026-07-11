@@ -6,7 +6,7 @@ This project is a hands-on purple-team lab built to demonstrate the full lifecyc
 - **WIN11-CLIENT** - Windows 11, domain-joined
 - **Kali** - attacker, 192.168.64.7
 
-  <img src="images/kerberoast-4769.png" width="700">
+ <img src="Active%20Directory%20Images/Pn3.png" width="700">
 
 ## Domain Setup (RBAC, Hardening, Telemetry)
 I built the domain to resemble a small but realistic organization rather than an empty test environment. On DC01, I configured Active Directory and DNS for the `corp.local` domain, then created organizational units to hold users and groups the way a real administrator would. Inside them, I created six user accounts and three security groups — `IT_Admins`, `Finance_Team`, and `HelpDesk` — and assigned each user to the group matching their role.
