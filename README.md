@@ -6,24 +6,53 @@ This project is a hands-on purple-team lab built to demonstrate the full lifecyc
 - **WIN11-CLIENT** - Windows 11, domain-joined
 - **Kali** - attacker, 192.168.64.7
 
- <img src="Active%20Directory%20Images/Pn10.png" width="700">
-  <img src="Active%20Directory%20Images/Pn16.png" width="700">
+<img src="Active%20Directory%20Images/Pn10.png" width="700">
+
+*Active Directory Users and Computers for the `corp.local` domain.*
+
+<img src="Active%20Directory%20Images/Pn60.png" width="700">
+
+*The six user accounts created in the UserAccounts OU.*
 
 ## Domain Setup (RBAC, Hardening, Telemetry)
 I built the domain to resemble a small but realistic organization rather than an empty test environment. On DC01, I configured Active Directory and DNS for the `corp.local` domain, then created organizational units to hold users and groups the way a real administrator would. Inside them, I created six user accounts and three security groups — `IT_Admins`, `Finance_Team`, and `HelpDesk` — and assigned each user to the group matching their role.
 
+<img src="Active%20Directory%20Images/Pn61.png" width="700">
+
+*The three role-based security groups: `IT_Admins`, `Finance_Team`, and `HelpDesk`.*
+
+<img src="Active%20Directory%20Images/Pn66.png" width="700">
+
+*`IT_Admins` membership — including `bob.jones`, the account targeted later in the lab.*
+
 This structure follows **role-based access control (RBAC)**: permissions are granted to groups, and users inherit them through membership, rather than being assigned access one person at a time. To make that access model concrete, I created three file shares mapped to those groups and removed the default "Everyone" permission from each, enforcing **least privilege** so a compromised account can only reach what its role needs.
+
+<img src="Active%20Directory%20Images/Pn71.png" width="700">
+
+*The IT share locked down to `IT_Admins` only — the default "Everyone" permission removed.*
 
 I then hardened the domain with a password and lockout policy through Group Policy: a 12-character minimum, complexity enabled, password history, a maximum password age, and account lockout after five failed attempts. These settings directly slow down password-guessing and spraying attacks, and I verified they applied using `net accounts`.
 
+<img src="Active%20Directory%20Images/Pn87.png" width="700">
+
+*Group Policy password policy: 12-character minimum, complexity, and history enforced.*
+
+<img src="Active%20Directory%20Images/Pn95.png" width="700">
+
+*Verifying the applied policy with `net accounts`.*
+
 Finally, before running any attacks, I deployed the detection layer. I installed **Sysmon** on both DC01 and the Windows 11 client using the SwiftOnSecurity configuration, giving me rich endpoint telemetry — process creation, network connections, and more — beyond what the default Windows logs capture. Setting up detection *before* attacking was deliberate: it meant I could watch each attack happen through the telemetry rather than reconstruct it afterward.
+
+<img src="Active%20Directory%20Images/Pn114.png" width="700">
+
+*Sysmon telemetry flowing on DC01, verified with `Get-WinEvent`.*
 
 ## Mapping the Attack Path with BloodHound
 Before running any attacks, I used **BloodHound Community Edition** to map the relationships in `corp.local` as a graph and reveal privilege-escalation paths that are hard to see by reading group memberships one at a time. I collected the domain data from Kali using `bloodhound-ce-python`, then ran BloodHound itself in Docker to visualize it.
 
 The graph confirmed the intentional attack path I had built: `bob.jones` is both **Kerberoastable** (he has a Service Principal Name, so any user can request his ticket) and a direct **member of `IT_Admins`**. That combination is the whole point — cracking that one service account's password doesn't just recover a single password, it hands an attacker membership in an administrative group. BloodHound made that escalation path visible in a single picture, and it explains *why* a low-privilege service account is worth attacking in the first place.
 
-<img src="images/bloodhound-path.png" width="700">
+<img src="Active%20Directory%20Images/Pn138.png" width="700">
 
 *BloodHound showing the shortest path: `bob.jones` → `MemberOf` → `IT_Admins`.*
 
@@ -32,16 +61,15 @@ Kerberoasting exploits how Kerberos handles service tickets. Any authenticated d
 
 From Kali, I used Impacket's `GetUserSPNs`, authenticating as `sarah.connor`, to request the service ticket for `bob.jones`'s SPN (`MSSQLSvc/dc01.corp.local:1433`). The domain controller returned an encrypted TGS ticket using **RC4 encryption (type 0x17)** — a weak, legacy cipher that attack tools deliberately request because RC4 hashes are far faster to crack offline than modern AES.
 
-<img src="images/kerberoast-attack.png" width="700">
+<img src="Active%20Directory%20Images/Pn145.png" width="700">
 
 *Impacket `GetUserSPNs` returning the Kerberoastable hash for `bob.jones`.*
 
 On the defender's side, this request generated **Windows Security Event ID 4769**. I wrote a PowerShell script to pull the event and export the key fields — the requesting account, the target service, the encryption type, and the source IP — as structured JSON. The captured event shows `sarah.connor` requesting `bob.jones`'s service, with encryption type `0x17` from the Kali host — the exact signature of a Kerberoasting attack.
 
-<img src="images/kerberoast-4769.png" width="700">
+<img src="Active%20Directory%20Images/Pn209.png" width="700">
 
 *Event 4769 captured on DC01: RC4 (0x17) ticket request from the Kali host (192.168.64.7).*
-
 
 ## Attack 2 — AS-REP Roasting (T1558.004)
 
@@ -49,13 +77,17 @@ AS-REP Roasting targets user accounts that have Kerberos pre-authentication disa
 
 To set up the attack, I disabled pre-authentication on `rachel.green` using `Set-ADAccountControl`. From Kali, I ran Impacket's `GetNPUsers` against the domain with a list of usernames. It correctly reported that five of the six users were protected, and returned a crackable hash for only `rachel.green` — the one account I had weakened. The hash uses **RC4 (0x17)** encryption, the same offline-cracking signature as Kerberoasting.
 
-<img src="images/asrep-attack.png" width="700">
+<img src="Active%20Directory%20Images/Pn159.png" width="700">
+
+*Disabling pre-authentication on `rachel.green` with `Set-ADAccountControl`.*
+
+<img src="Active%20Directory%20Images/Pn170.png" width="700">
 
 *Impacket `GetNPUsers` returning an AS-REP hash for `rachel.green`; the other five users are protected by pre-authentication.*
 
 On the defender's side, AS-REP Roasting generates **Event ID 4768** (the initial authentication request) rather than 4769. I captured it the same way, filtering for the malicious request: `rachel.green`, RC4 encryption, from the Kali host.
 
-<img src="images/asrep-4768.png" width="700">
+<img src="Active%20Directory%20Images/Pn185.png" width="700">
 
 *Event 4768 captured on DC01: RC4 (0x17) authentication request for `rachel.green` from the Kali host.*
 
@@ -65,17 +97,21 @@ Pass-the-Hash is different from the two roasting attacks: it skips cracking enti
 
 It's a two-part attack — first obtain a hash, then use it. To get the hashes, I ran Impacket's `secretsdump` from Kali against DC01, which dumped the NTLM hashes for every domain account. I then used that hash with Impacket's `psexec`/`wmiexec` to authenticate to DC01 as **Administrator using only the hash — no password**. The successful SMB session and access to administrative shares confirm the authentication worked.
 
-<img src="images/pth-secretsdump.png" width="700">
+<img src="Active%20Directory%20Images/Pn189.png" width="700">
 
 *Impacket `secretsdump` dumping NTLM hashes from DC01.*
 
+<img src="Active%20Directory%20Images/Pn195.png" width="700">
+
+*Impacket `wmiexec` authenticating to DC01 as Administrator using only the NTLM hash — no password.*
+
 On the defender's side, Pass-the-Hash produces **Event ID 4624** (a successful logon) with a distinctive signature: **Logon Type 3** (network logon) using **NTLM** authentication, for a privileged account, from a remote host. I captured it by filtering for exactly that combination. The logs show `Administrator` logging on via NTLM Type-3 from the Kali host — the defender's side proof that the hash authenticated successfully.
 
-<img src="images/pth-4624.png" width="700">
+<img src="Active%20Directory%20Images/Pn196.png" width="700">
 
 *Event 4624 captured on DC01: Administrator logons via NTLM, Logon Type 3, from the Kali host (192.168.64.7).*
 
-  ## The Detection Pipeline
+## The Detection Pipeline
 The detection layer is the core of this project. The important design principle behind it: **the language model does not detect the attacks — code does.** A large language model can't monitor a network; it's a text-in, text-out system. So the detection is handled by a pipeline around it, and the model's job is only the final analysis-and-reporting step.
 
 The pipeline works in three stages:
@@ -91,10 +127,6 @@ This separation matters. The **detection** is done by collecting the right telem
 
 Running the detector against all three captured events produces three correctly classified, MITRE-mapped incident reports — a working multi-attack detection pipeline rather than a single-attack script.
 
-<img src="images/detector-reports.png" width="700">
+<img src="Active%20Directory%20Images/Pn182.png" width="700">
 
 *The detector classifying and reporting on all three attacks (Kerberoasting, AS-REP Roasting, Pass-the-Hash).*
-
-  ## What I learned
-  
-
